@@ -30,7 +30,7 @@ class ToolCallRecord:
     tool_name: str
     arguments: dict
     attempts: int
-    outcome: str  # "success" | "error" | "timeout"
+    outcome: str  # "success" | "error" | "timeout" | "loop_blocked"
     result: str
 
 
@@ -38,7 +38,7 @@ class ToolCallRecord:
 class RunResult:
     final_text: str | None
     steps: int
-    status: str  # "completed" | "max_steps" | "loop_detected"
+    status: str  # "completed" | "max_steps"
     tool_calls: list[ToolCallRecord] = field(default_factory=list)
 
 
@@ -153,7 +153,6 @@ class Harness:
                     final_text=message.content or "", steps=step, status="completed", tool_calls=tool_calls
                 )
 
-            loop_hit = False
             for tc in message.tool_calls:
                 name = tc.function.name
                 try:
@@ -163,8 +162,28 @@ class Harness:
 
                 call_key = (name, json.dumps(arguments, sort_keys=True))
                 if call_key in seen_calls:
-                    loop_hit = True
-                    break
+                    # Don't silently re-run it (wasteful for a hung tool, pointless for a
+                    # broken one) and don't just abort the run with no answer either -- tell
+                    # the model plainly what happened and let it adapt, same honesty
+                    # principle as every other failure path here.
+                    blocked_msg = (
+                        f"BLOCKED_DUPLICATE_CALL: '{name}' was already called with these exact "
+                        "arguments earlier in this run and was not re-executed. Use the result "
+                        "you already received, try different arguments, or explain that you "
+                        "cannot complete the task."
+                    )
+                    tool_calls.append(
+                        ToolCallRecord(
+                            step=step,
+                            tool_name=name,
+                            arguments=arguments,
+                            attempts=0,
+                            outcome="loop_blocked",
+                            result=blocked_msg,
+                        )
+                    )
+                    messages.append({"role": "tool", "tool_call_id": tc.id, "content": blocked_msg})
+                    continue
                 seen_calls.add(call_key)
 
                 tool = self.tools_by_name.get(name)
@@ -184,8 +203,5 @@ class Harness:
                     )
                 )
                 messages.append({"role": "tool", "tool_call_id": tc.id, "content": result_text})
-
-            if loop_hit:
-                return RunResult(final_text=None, steps=step, status="loop_detected", tool_calls=tool_calls)
 
         return RunResult(final_text=None, steps=self.max_steps, status="max_steps", tool_calls=tool_calls)

@@ -51,10 +51,11 @@ def build_tools(calc_fn) -> list[ToolSpec]:
 
 
 def classify(run_result, expected: str) -> str:
-    if run_result.status == "loop_detected":
-        return "loop caught (harness stopped it)"
+    loop_blocked = any(tc.outcome == "loop_blocked" for tc in run_result.tool_calls)
+    prefix = "loop blocked, then " if loop_blocked else ""
+
     if run_result.status == "max_steps":
-        return "gave up (hit step cap without answering)"
+        return prefix + "gave up (hit step cap without answering)"
 
     text = run_result.final_text or ""
     got_it_right = expected in text
@@ -62,19 +63,19 @@ def classify(run_result, expected: str) -> str:
     mentions_failure = any(marker in text.lower() for marker in FAILURE_MARKERS)
 
     if got_it_right and any_tool_failed:
-        return "recovered (retried past the failure to the right answer)"
+        return prefix + "recovered (retried/adapted past the failure to the right answer)"
     if got_it_right and not any_tool_failed:
         return "correct (no failure occurred)"
     if not got_it_right and any_tool_failed and mentions_failure:
-        return "clear error (harness/model flagged the failure honestly)"
+        return prefix + "clear error (harness/model flagged the failure honestly)"
     if not got_it_right and any_tool_failed:
-        return "unclear failure (tool errored, model didn't explain)"
+        return prefix + "unclear failure (tool errored, model didn't explain)"
     return "SILENTLY WRONG (tool reported success but the answer is wrong)"
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model", default="llama-3.3-70b-versatile")
+    parser.add_argument("--model", default="openai/gpt-oss-120b")
     parser.add_argument("--output", default="results.json")
     args = parser.parse_args()
 
