@@ -3,7 +3,7 @@
 A small tool-calling harness for LLM agents, built to answer one question: when a tool
 call breaks, does the system recover, fail honestly, or fail silently?
 
-Most "build an agent" examples stop at the happy path -- call the API, if it wants a
+Most "build an agent" examples stop at the happy path: call the API, if it wants a
 tool run it, feed the result back, repeat. That loop is maybe 20 lines and it's the
 easy part. The actual engineering is in what happens when a tool hangs, throws,
 returns garbage, or gets called in an unproductive loop. Bulkhead is that layer,
@@ -19,13 +19,13 @@ in resilience engineering: isolate a failure so it doesn't sink the whole system
 - **Retry with backoff**: a failing tool call gets up to 2 retries with exponential
   backoff before the harness gives up on it.
 - **Timeout enforcement**: each tool call runs on a daemon thread with a hard timeout,
-  so one hung tool can't hang the whole run (or the process -- see below).
+  so one hung tool can't hang the whole run (or the process, see below).
 - **Honest error surfacing**: when a tool fails after retries, the model is told
   exactly what happened, in plain text, instead of the harness pretending nothing
   went wrong.
 - **Loop handling**: if the model calls the same tool with the same arguments twice,
   the harness doesn't re-execute it (pointless for a broken tool, wasteful for a slow
-  one) or silently abort the run -- it tells the model the call was blocked and lets
+  one) or silently abort the run. It tells the model the call was blocked and lets
   it keep trying.
 
 ## Architecture
@@ -58,7 +58,7 @@ loop back to the model with all tool results
 ## The two real tools
 
 - `calculator(expression)`: evaluates basic arithmetic safely via Python's `ast`
-  module (parses and walks the tree itself -- no `eval()`).
+  module (parses and walks the tree itself, no `eval()`).
 - `lookup(query)`: looks up a small fact (e.g. "days in a week") from a fixed
   in-memory table. A stand-in for a real search/retrieval tool.
 
@@ -72,12 +72,12 @@ through the harness once per variant and records what actually happened.
 | Variant | Status | Outcome |
 |---|---|---|
 | baseline (working calculator) | completed | correct, no failure |
-| timeout (hangs forever) | completed | **recovered** -- timed out, retried, adapted to the right answer |
-| malformed_output (garbage string) | completed | **loop blocked, then recovered** -- retried the same call once, harness blocked the repeat, model adapted anyway |
-| silent_empty (returns `""`) | completed | correct -- model reasoned around the empty result; the harness can't tell "empty but technically successful" from real success, and doesn't try to |
-| exception (raises mid-call) | completed | **recovered** -- caught, retried, reported, model adapted |
-| loop_inducing (always says "retry this") | **max_steps** | **loop blocked twice, then gave up** -- an honest failure, not a hidden one |
-| plausible_wrong_answer (silently off by +1) | completed | **SILENTLY WRONG** -- final answer `19.14...` instead of `18`, no error anywhere |
+| timeout (hangs forever) | completed | **recovered**: timed out, retried, adapted to the right answer |
+| malformed_output (garbage string) | completed | **loop blocked, then recovered**: retried the same call once, harness blocked the repeat, model adapted anyway |
+| silent_empty (returns `""`) | completed | correct: model reasoned around the empty result; the harness can't tell "empty but technically successful" from real success, and doesn't try to |
+| exception (raises mid-call) | completed | **recovered**: caught, retried, reported, model adapted |
+| loop_inducing (always says "retry this") | **max_steps** | **loop blocked twice, then gave up**: an honest failure, not a hidden one |
+| plausible_wrong_answer (silently off by +1) | completed | **SILENTLY WRONG**: final answer `19.14...` instead of `18`, no error anywhere |
 
 Full machine-readable output in `results.json`.
 
@@ -89,7 +89,7 @@ Full machine-readable output in `results.json`.
   surfaced the failure honestly. Nothing hung, nothing crashed uncaught, nothing
   silently returned a blank result to the caller.
 - **`loop_inducing` is a genuine, useful negative result.** The harness correctly
-  stopped a pointless duplicate call twice -- but a tool that keeps saying "retry this
+  stopped a pointless duplicate call twice, but a tool that keeps saying "retry this
   exact same thing" with zero new information is genuinely hard to escape within a
   fixed step budget, and the model ran out of steps. That's reported as `max_steps`,
   not disguised as a success. A smarter version would detect "no forward progress
@@ -108,14 +108,14 @@ Full machine-readable output in `results.json`.
 
 While building the timeout wrapper, an early version used
 `concurrent.futures.ThreadPoolExecutor` and passed all of `test_harness.py`'s
-assertions -- but the process itself never exited. The leaked thread from a timed-out
+assertions, but the process itself never exited. The leaked thread from a timed-out
 call (Python can't force-kill a thread) was non-daemon, so the interpreter waited on
 it at shutdown, indefinitely. `test_harness.py` was rerun with a wall-clock check and
 caught it directly; the fix was switching to a raw `daemon=True` thread per call. The
-tests passing wasn't proof of correctness on its own -- proof was watching the process
+tests passing wasn't proof of correctness on its own: proof was watching the process
 actually exit.
 
-## Limitations, stated plainly
+## Limitations
 
 - **Daemon threads don't kill the work, they just stop waiting for it.** A genuinely
   hung tool call keeps running in the background for the life of the process. A
@@ -124,14 +124,14 @@ actually exit.
 - **Loop detection is one heuristic**: exact (tool name, arguments) repeats. A tool
   that varies its unproductive response slightly each time would not be caught by
   this check.
-- **The silently-wrong-answer case is out of scope for this layer**, as shown above --
+- **The silently-wrong-answer case is out of scope for this layer**, as shown above:
   documented here rather than papered over.
 - **One provider, one model** (Groq, `openai/gpt-oss-120b`). Retry/timeout/loop
   behavior is provider-agnostic by construction, but how *often* the model recovers
-  from a given failure is not -- a different model could do better or worse on the
+  from a given failure is not: a different model could do better or worse on the
   same broken tools.
 
-## What I'd add next
+## Future Improvements
 
 - Escalate faster on "no forward progress" instead of relying only on the step cap.
 - Process-level tool isolation for a real hard-kill on timeout.
@@ -151,7 +151,7 @@ python run_bench.py           # live: runs the 7-variant benchmark, writes resul
 
 ```
 harness.py       Core loop: retry, timeout, error surfacing, loop handling
-tools.py         calculator, lookup -- the two real tools
+tools.py         calculator, lookup: the two real tools
 broken_tools.py  6 broken calculator variants, one per failure mode
 run_bench.py     Runs the fixed task through each variant, classifies the outcome
 test_harness.py  Offline tests against the retry/timeout layer (no API key needed)
