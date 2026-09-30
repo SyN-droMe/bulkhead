@@ -89,14 +89,13 @@ Full machine-readable output in `results.json`.
   surfaced the failure honestly. Nothing hung, nothing crashed uncaught, nothing
   silently returned a blank result to the caller.
 - **`loop_inducing` is a genuine, useful negative result.** The harness correctly
-  stopped a pointless duplicate call twice, but a tool that keeps saying "retry this
+  stopped a pointless duplicate call twice but a tool that keeps saying "retry this
   exact same thing" with zero new information is genuinely hard to escape within a
-  fixed step budget, and the model ran out of steps. That's reported as `max_steps`,
+  fixed step budget and the model ran out of steps. That's reported as `max_steps`,
   not disguised as a success. A smarter version would detect "no forward progress
   after N interventions" and escalate faster instead of just capping total steps.
-- **`plausible_wrong_answer` is the one this harness cannot catch, by design**, and
-  it's worth being direct about why: the retry/timeout/error-surfacing layer only
-  reacts to signals like exceptions, timeouts, and repeated calls. A tool that
+- **`plausible_wrong_answer` is the one this harness cannot catch, by design.** It's because the retry/timeout/error-surfacing layer only
+  reacts to signals like exceptions, timeouts and repeated calls. A tool that
   returns successfully with a wrong number produces none of those signals. In this
   run the wrongness even compounded silently across two chained calculator calls
   (`126 -> 127`, then `127/7 -> 18.14... -> 19.14...`) without a single error anywhere
