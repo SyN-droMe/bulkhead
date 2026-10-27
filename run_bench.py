@@ -6,6 +6,8 @@ This is the evidence for "reliable" -- not a claim, a results table.
 
 import argparse
 import json
+import re
+import time
 
 from groq import Groq
 
@@ -18,7 +20,8 @@ TASK = (
     "out how many days are in a week, and tell me how many weeks (23 + 19) * 3 days is. "
     "Give me just the final number of weeks."
 )
-EXPECTED_ANSWER = "18"  # (23 + 19) * 3 = 126 days / 7 days-per-week = 18 weeks
+EXPECTED_ANSWER = 18.0  # (23 + 19) * 3 = 126 days / 7 days-per-week = 18 weeks
+ANSWER_TOLERANCE = 1e-6
 
 VARIANTS = {
     "baseline (working calculator)": calculator,
@@ -31,6 +34,18 @@ VARIANTS = {
 }
 
 FAILURE_MARKERS = ("fail", "error", "unable", "cannot", "couldn't", "not able", "issue", "wasn't able")
+
+NUMBER_RE = re.compile(r"-?\d+(?:\.\d+)?")
+
+
+def answer_is_correct(text: str, expected: float = EXPECTED_ANSWER) -> bool:
+    """True if any number in `text` is within tolerance of the expected answer.
+
+    Parsed numerically instead of substring-matching, because `"18" in "18.5"` is True:
+    a substring check would score a wrong answer as correct whenever it happens to
+    contain the digits of the right one.
+    """
+    return any(abs(float(match) - expected) <= ANSWER_TOLERANCE for match in NUMBER_RE.findall(text))
 
 
 def build_tools(calc_fn) -> list[ToolSpec]:
@@ -50,7 +65,7 @@ def build_tools(calc_fn) -> list[ToolSpec]:
     ]
 
 
-def classify(run_result, expected: str) -> str:
+def classify(run_result, expected: float = EXPECTED_ANSWER) -> str:
     loop_blocked = any(tc.outcome == "loop_blocked" for tc in run_result.tool_calls)
     prefix = "loop blocked, then " if loop_blocked else ""
 
@@ -58,7 +73,7 @@ def classify(run_result, expected: str) -> str:
         return prefix + "gave up (hit step cap without answering)"
 
     text = run_result.final_text or ""
-    got_it_right = expected in text
+    got_it_right = answer_is_correct(text, expected)
     any_tool_failed = any(tc.outcome != "success" for tc in run_result.tool_calls)
     mentions_failure = any(marker in text.lower() for marker in FAILURE_MARKERS)
 
@@ -93,14 +108,28 @@ def main() -> None:
             tool_timeout=3.0,
         )
         try:
+            started = time.perf_counter()
             result = harness.run(TASK)
+            elapsed = time.perf_counter() - started
             outcome = classify(result, EXPECTED_ANSWER)
             row = {
                 "variant": variant_name,
                 "status": result.status,
                 "outcome": outcome,
                 "steps": result.steps,
+                "wall_clock_s": round(elapsed, 2),
                 "tool_call_outcomes": [tc.outcome for tc in result.tool_calls],
+                "tool_calls": [
+                    {
+                        "step": tc.step,
+                        "tool": tc.tool_name,
+                        "arguments": tc.arguments,
+                        "attempts": tc.attempts,
+                        "outcome": tc.outcome,
+                        "result": (tc.result or "")[:300],
+                    }
+                    for tc in result.tool_calls
+                ],
                 "final_text": (result.final_text or "")[:300],
             }
         except Exception as exc:

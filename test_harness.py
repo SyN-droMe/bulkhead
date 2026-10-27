@@ -85,6 +85,23 @@ def test_empty_and_malformed_output_pass_through_as_success() -> bool:
     )
 
 
+def test_answer_check_is_numeric() -> bool:
+    # Regression: the first version of the benchmark scored an answer with a substring
+    # check ("18" in text), so "18.5" or "180" counted as correct. Answers are compared
+    # numerically now.
+    from run_bench import answer_is_correct
+
+    return check(
+        "answer check compares numbers, not substrings",
+        answer_is_correct("the answer is 18 weeks")
+        and answer_is_correct("18.0")
+        and not answer_is_correct("about 18.5 weeks")
+        and not answer_is_correct("180")
+        and not answer_is_correct("19.142857142857142"),
+        "substring scoring would accept 18.5 and 180 as correct",
+    )
+
+
 def test_loop_detection_key() -> bool:
     # Loop detection lives in Harness.run() (needs the LLM loop), not in the retry layer.
     # This just checks the same-call-twice key logic in isolation.
@@ -105,6 +122,7 @@ if __name__ == "__main__":
         test_timeout_does_not_hang_the_caller,
         test_exception_is_caught_and_reported,
         test_empty_and_malformed_output_pass_through_as_success,
+        test_answer_check_is_numeric,
         test_loop_detection_key,
     ]
     results = [t() for t in tests]
