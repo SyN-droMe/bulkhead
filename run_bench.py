@@ -9,8 +9,6 @@ import json
 import re
 import time
 
-from groq import Groq
-
 import broken_tools as bt
 from harness import Harness, ToolSpec
 from tools import CALCULATOR_SPEC, LOOKUP_SPEC, calculator, lookup
@@ -91,8 +89,14 @@ def classify(run_result, expected: float = EXPECTED_ANSWER) -> str:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", default="openai/gpt-oss-120b")
+    parser.add_argument("--isolation", default="thread", choices=["thread", "process"])
     parser.add_argument("--output", default="results.json")
     args = parser.parse_args()
+
+    # Imported here, not at module level: `isolation="process"` spawns a child that
+    # re-imports this module, and a heavyweight top-level import would be paid on every
+    # tool call (and can trip the per-call timeout).
+    from groq import Groq
 
     client = Groq()
     results = []
@@ -106,6 +110,7 @@ def main() -> None:
             max_steps=6,
             max_retries=2,
             tool_timeout=3.0,
+            isolation=args.isolation,
         )
         try:
             started = time.perf_counter()
@@ -114,6 +119,7 @@ def main() -> None:
             outcome = classify(result, EXPECTED_ANSWER)
             row = {
                 "variant": variant_name,
+                "isolation": args.isolation,
                 "status": result.status,
                 "outcome": outcome,
                 "steps": result.steps,
@@ -135,6 +141,7 @@ def main() -> None:
         except Exception as exc:
             row = {
                 "variant": variant_name,
+                "isolation": args.isolation,
                 "status": "CRASHED",
                 "outcome": "crashed (unhandled exception escaped the harness)",
                 "error": f"{type(exc).__name__}: {exc}",

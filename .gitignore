@@ -1,6 +1,7 @@
 __pycache__/
 *.pyc
 .env
-results.json
+results*.json
+isolation_results.json
 .idea/
 .vscode/

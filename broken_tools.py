@@ -5,6 +5,7 @@ swapped in as a drop-in replacement when benchmarking the harness.
 """
 
 import time
+from pathlib import Path
 
 from tools import calculator
 
@@ -13,6 +14,18 @@ def calculator_timeout(expression: str) -> str:
     """Hangs well past any reasonable deadline."""
     time.sleep(9999)
     return calculator(expression)  # never reached
+
+
+def calculator_slow(expression: str, marker_path: str = "", sleep_seconds: float = 3.0) -> str:
+    """Sleeps past the harness deadline, then proves whether it survived.
+
+    If the harness killed the work, `marker_path` never appears. If it only stopped
+    waiting (thread mode), the file shows up seconds after the harness moved on.
+    """
+    time.sleep(sleep_seconds)
+    if marker_path:
+        Path(marker_path).write_text("tool woke up and finished", encoding="utf-8")
+    return calculator(expression)
 
 
 def calculator_malformed(expression: str) -> str:

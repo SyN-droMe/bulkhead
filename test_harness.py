@@ -5,9 +5,13 @@ directly against real and broken tools.
 Run with: python test_harness.py
 """
 
+import os
+import tempfile
 import time
+from pathlib import Path
 
 import broken_tools as bt
+from bench_isolation import pid_is_alive
 from harness import Harness, ToolSpec
 from tools import calculator
 
@@ -15,9 +19,16 @@ PASS = "PASS"
 FAIL = "FAIL"
 
 
-def make_harness(fn, tool_timeout=1.0, max_retries=2) -> Harness:
+def make_harness(fn, tool_timeout=1.0, max_retries=2, isolation="thread") -> Harness:
     tool = ToolSpec(name="calculator", description="", input_schema={}, fn=fn)
-    return Harness(client=None, model="unused", tools=[tool], tool_timeout=tool_timeout, max_retries=max_retries)
+    return Harness(
+        client=None,
+        model="unused",
+        tools=[tool],
+        tool_timeout=tool_timeout,
+        max_retries=max_retries,
+        isolation=isolation,
+    )
 
 
 def check(label: str, condition: bool, detail: str = "") -> bool:
@@ -116,6 +127,87 @@ def test_loop_detection_key() -> bool:
     )
 
 
+def test_process_isolation_runs_tools_and_reports_errors() -> bool:
+    h = make_harness(calculator, isolation="process")
+    result, outcome, attempts = h._call_tool_with_retry(h.tools_by_name["calculator"], {"expression": "2 + 2"})
+
+    h_err = make_harness(bt.calculator_exception, isolation="process")
+    err_result, err_outcome, _ = h_err._call_tool_with_retry(
+        h_err.tools_by_name["calculator"], {"expression": "2 + 2"}
+    )
+
+    return check(
+        "process mode returns correct results and keeps the original error text",
+        result == "4"
+        and outcome == "success"
+        and attempts == 1
+        and err_outcome == "error"
+        and "arithmetic engine offline" in err_result,
+        f"result={result!r} outcome={outcome!r} err={err_result!r}",
+    )
+
+
+def test_thread_mode_abandons_hung_work_without_killing_it() -> bool:
+    # The documented limitation, pinned as behaviour: the harness stops waiting, but the
+    # tool keeps running and eventually finishes. The marker file is the proof.
+    with tempfile.TemporaryDirectory() as tmp:
+        marker = Path(tmp) / "thread_marker.txt"
+        h = make_harness(bt.calculator_slow, tool_timeout=1.0, max_retries=0)
+        arguments = {"expression": "2+2", "marker_path": str(marker), "sleep_seconds": 1.5}
+
+        start = time.monotonic()
+        result, outcome, _ = h._call_tool_with_retry(h.tools_by_name["calculator"], arguments)
+        elapsed = time.monotonic() - start
+        marker_at_return = marker.exists()
+
+        deadline = time.monotonic() + 2.5
+        while time.monotonic() < deadline and not marker.exists():
+            time.sleep(0.05)
+
+        return check(
+            "thread mode times out but the abandoned work keeps running",
+            outcome == "timeout" and elapsed < 2.0 and not marker_at_return and marker.exists(),
+            f"outcome={outcome!r} elapsed={elapsed:.2f}s marker_at_return={marker_at_return} "
+            f"marker_later={marker.exists()}",
+        )
+
+
+def test_process_mode_kills_hung_worker() -> bool:
+    with tempfile.TemporaryDirectory() as tmp:
+        marker = Path(tmp) / "process_marker.txt"
+        h = make_harness(bt.calculator_slow, tool_timeout=1.0, max_retries=0, isolation="process")
+        arguments = {"expression": "2+2", "marker_path": str(marker), "sleep_seconds": 1.5}
+
+        start = time.monotonic()
+        result, outcome, _ = h._call_tool_with_retry(h.tools_by_name["calculator"], arguments)
+        elapsed = time.monotonic() - start
+
+        worker_pid = h.last_process_pid
+        alive_on_return = pid_is_alive(worker_pid)
+
+        # Sleep past the point where the tool would have woken up and written the marker.
+        time.sleep(2.0)
+
+        return check(
+            "process mode times out and the worker is actually dead",
+            outcome == "timeout"
+            and elapsed < 2.0
+            and worker_pid is not None
+            and alive_on_return is False
+            and not marker.exists(),
+            f"outcome={outcome!r} elapsed={elapsed:.2f}s pid={worker_pid} alive={alive_on_return} "
+            f"marker={marker.exists()}",
+        )
+
+
+def test_invalid_isolation_mode_is_rejected() -> bool:
+    try:
+        make_harness(calculator, isolation="threads")
+    except ValueError as exc:
+        return check("unknown isolation mode is rejected at construction", "isolation" in str(exc))
+    return check("unknown isolation mode is rejected at construction", False, "no ValueError raised")
+
+
 if __name__ == "__main__":
     tests = [
         test_working_tool_succeeds,
@@ -124,6 +216,10 @@ if __name__ == "__main__":
         test_empty_and_malformed_output_pass_through_as_success,
         test_answer_check_is_numeric,
         test_loop_detection_key,
+        test_process_isolation_runs_tools_and_reports_errors,
+        test_thread_mode_abandons_hung_work_without_killing_it,
+        test_process_mode_kills_hung_worker,
+        test_invalid_isolation_mode_is_rejected,
     ]
     results = [t() for t in tests]
     passed = sum(results)
